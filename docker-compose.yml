@@ -1,0 +1,77 @@
+# wolfOTA simulation environment
+name: wolfota
+
+x-base: &base
+  image: wolfota-base:dev
+  build:
+    context: docker/base
+
+services:
+  base:
+    <<: *base
+    entrypoint: ["true"]
+    profiles: ["build"]
+
+  ca:
+    <<: *base
+    entrypoint: ["/opt/ca/init-ca.sh"]
+    volumes:
+      - pki:/pki
+      - trust:/trust
+      - ./cloud/ca:/opt/ca:ro
+
+  broker:
+    image: eclipse-mosquitto:2
+    depends_on:
+      ca:
+        condition: service_completed_successfully
+    volumes:
+      - pki:/pki:ro
+      - ./cloud/broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./cloud/broker/acl:/mosquitto/config/acl:ro
+    networks:
+      default:
+        aliases: [broker.wolfota.test]
+    ports:
+      - "8883:8883"
+
+  est:
+    build: cloud/est
+    image: wolfota-est:dev
+    depends_on:
+      ca:
+        condition: service_completed_successfully
+    environment:
+      EST_BOOTSTRAP_USER: wolfota
+      EST_BOOTSTRAP_PASS: bootstrap
+      EST_CERT_VALIDITY: 720h
+    volumes:
+      - pki:/pki
+    networks:
+      default:
+        aliases: [est.wolfota.test]
+    ports:
+      - "8443:8443"
+
+  device:
+    build: device
+    image: wolfota-device:dev
+    depends_on:
+      broker:
+        condition: service_started
+      est:
+        condition: service_started
+    environment:
+      O4D_EST_URL: https://est.wolfota.test:8443/.well-known/est
+      O4D_EST_USER: wolfota
+      O4D_EST_PASS: bootstrap
+      O4D_MQTT_HOST: broker.wolfota.test
+    # device id = container hostname, so `--scale device=N` gives N devices
+    entrypoint: ["sh", "-c", "O4D_DEVICE_ID=$${O4D_DEVICE_ID:-$$(hostname)} exec /usr/local/bin/o4d"]
+    volumes:
+      # trust anchor installed together with o4d (CA certificate only)
+      - trust:/opt/o4d/trust:ro
+
+volumes:
+  pki:
+  trust:
